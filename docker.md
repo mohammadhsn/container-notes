@@ -136,5 +136,112 @@ docker commit -c 'CMD ["redis-server"]' CONTAINER_ID
 
 Now you have a new image and you could push it on your docker hub if you want.
 
+## Let's build something real
 
+We gained some experiences in images and containers from previous sections. To recap them we gonna work on a simple Nodejs application and run it with docker.
 
+To install dependencies we create a `package.json` fille in the root of repository with below content:
+
+```json
+{
+    "dependencies": {
+        "express": "*"
+    },
+    "scripts": {
+        "start": "node index.js"
+    }
+}
+
+```
+
+Imagaine a simple express application with a single endpoint:
+
+```js
+const express = require('express');
+
+const app = express();
+
+app.get('/', (req, res) => {
+    res.send('Hi there');
+});
+
+app.listen(8080, () => {
+    console.log('Huray! Listening on 8080.');
+});
+```
+
+Now lets create a docker file for the purpose. There is a point, in the previouse sections we used the `alpine` as base image. What if we try to use it for current project? The point is `alpine` doesn't ship with `nodejs` in default. We may want to use it, but we have to install nodejs using `RUN` directive and maybe it has some other dependencies. The easier way is using the [official node image](https://hub.docker.com/_/node). Obviously node image has been installed node and npm. The official image has a lot of tags they ship with several versions of node, different operations systems (including alpine) and everything.
+
+It's time to create a `Dockerfile`
+
+```dockerfile
+FROM node:12-alpine
+
+RUN npm install
+
+CMD ["node", "start"]
+```
+
+How it sounds? there is some issues. when we want to build the image using `docker build .` we should get errors.
+
+Our repository located on our local machine's file system, so there is nothing inside the container. when docker runs `npm install`, npm looks for a `package.json` file inside the container and it doesn't exist there. The solution is using `COPY` directive. It helps us to copy our files from host machine into the container. let's change file to below version:
+
+```dockerfile
+FROM node12-alpine
+
+COPY ./ ./
+
+RUN npm install
+
+CMD ["npm", "start"]
+```
+
+ Note that `COPY ./ ./` says that: Hey docker! copy everything from current directory on my computer into the container. Now, problem solved and we can build our image:
+
+```sh
+docker build -t johndoe/my-app
+docker run johndoe/my-app
+```
+
+Let's check it using `curl localhost:8080`. Does it repond? Probably no. The point `8080` port is exposed just **inside** container, the curl command sends request to host machine that doesn't serve anything on `8080`. What can we do? 
+
+When we're building the image, there is an option to binding the ports. One side host machine another side container. Let's try something new:
+
+```sh
+docker run -p 8080:8080 johndoe/my-app
+```
+
+`-p` flag (means publish) tells the docker that: mount `8080` of host machine to `8080` of container. It works, but with current dockerfile we are copying source code into `/` of the container which is not cool. It's better to conider a directory for our application, Let's say `/app` and modify the dockerfile.
+
+```dockerfile
+FROM node12-alpine
+
+COPY ./ /app
+
+WORKDIR /app
+
+RUN npm install
+
+CMD ["npm", "start"]
+```
+
+There's an extra `WORKDIR` directive. The purpose is when we copy source code into `/app` docker won't switch working directory automatically. It still runs commands from `/`, so we should go to `/app` before run `npm install` and it's because our `package.json` is there now.
+
+As final note, What if we change the source code? Probably we should build the image again. So docker should build everything again. We may help docker to use it's cache optimizer. We probably want to change the `index.js` file, the change rate of `package.json` file is fewer than the `index.js`. Because we are copying everything from host machine, docker detects there is a change, so it won't use cache for this step. Let's change our copy strategy.
+
+```dockerfile
+FROM node:12-alpine
+
+WORKDIR /app
+
+COPY ./package.json /app
+
+RUN npm install
+
+COPY ./ /app
+
+CMD ["npm", "start"]
+
+```
+
+ No docker is able to use the cache in rebuilds, beacause the first four steps have no change, so docker build our image in faster way
