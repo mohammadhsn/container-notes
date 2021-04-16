@@ -245,3 +245,155 @@ CMD ["npm", "start"]
 ```
 
  No docker is able to use the cache in rebuilds, beacause the first four steps have no change, so docker build our image in faster way
+
+
+
+# Compose
+
+## The problem
+
+Imagaine our simple app needs redis. What can we do? We may add some commands in dockerfile in order to install redis and trying to connect it from the app. That's not common in containerization world. An important reason is about scalablity. In a high trafic website, we may want to have more than one instance of application in order to handle the pressure. We should be able to scale every single container separately, If we install redis inside the app's container, there is no posibility to scale app anymore.
+
+## The right way
+
+So the containerization's approach in about separete containers, but according to our knowledge until now, how can we do this? Probably we should run an app container, and then the redis container at the same time (in 2 terminal tabs). There is an issue, You're running redis and app inside your docker, as you know, docker and redis are running on the host machine (your local computer). They have no idea of each other, in other words they can't see each other. When containers should see each other in order to communication and stuff, they have to being in the same docker network. So we should create a docker network and join the containers in the network. This is possible with docker cli, but there are some complexity and repetitive jobs we must do every time. Fortunately there is strong and clean solution named **docker compose**. The docker compose created to make running multiple app containers much easier.
+
+
+
+## Real world example
+
+Let's modify previouse app to a new version that uses redis, we don't want to change the dockerfile, we just repeat latest version of the dockerfile.
+
+```dockerfile
+FROM node:12-alpine
+
+WORKDIR /app
+
+COPY package.json .
+
+RUN npm install
+
+COPY . .
+
+CMD ["npm", "start"]
+
+```
+
+The `index.js` has changes in order to user redis, The application's responsibility is counting website visits.
+
+```js
+const express = require('express');
+const redis = require('redis');
+
+const app = express();
+const client = redis.createClient({
+    host: 'redis'
+});
+
+client.set('visits', 0);
+
+app.get('/', (req, res) => {
+    client.get('visits', (error, visits) => {
+        res.send('Number of visits is ' + visits);
+        client.set('visits', parseInt(visits) + 1);
+    });
+});
+
+app.listen(8081, () => {
+    console.log('Listening on 8081')
+});
+
+```
+
+The docker-compose requires a file named `docker-compose.yml` for configuration purposes.
+
+```yaml
+version: '3'
+
+services: 
+    redis:
+        image: redis
+    
+    app:
+        build: .
+        ports:
+            - 8081:8081
+
+```
+
+## What does it do?
+
+- The `version` says: which compose configuration version you're using.
+- The `services` is most important part. Here is where we define containers. As you see, we have 2 containers named `redis` and `app`.
+- The `redis` container has a simple config. It says that: **just run me from redis officia image**. Remember the `docker run` command? It has the same behaviour. docker pulls the redis image from docke hub and run it.
+- The `app` container is simple too, `build .` means, there is a `Dockerfile` in current directory and it says how our image should build. The `ports` is what we seen before, It binds the local's 8001 to the container 8001, in order the make it possible to expose the 8001 in host machine.
+
+## Networking
+
+One of the most important features of compose is networking. The compse creates a network and joins the containers in. The containers are available with service name inside the network. That's how `index.js` connected to redis using it's host name, `redis` .
+
+## How it works?
+
+Now we're ready to build image and then run the containers. Compose makes them much easy in a single command.
+
+```sh
+docker-compose up
+```
+
+The compose looks for our `docker-compose.yml` file. It works on images first. The app's image built from the `Dockerfile` and the redis image located on docker hub and docker pulls it. Then it runs the images as we wanted in `docker-compose.yml` file. Now it must be up in your localhost:8081. By default compose doesn't free your terminal, if you want so, there is a `-d` flag to to run your containers in background. For the opposite action (stop containers and remove them) we use `down` command.
+
+```sh]
+docker-compose down
+```
+
+Note that it's will be valid only in project's path, where your `docker-compose.yml` located.
+
+## Restart policy
+
+What if our app's container crashes? By default docker doesn't perform any strategy unless you tell it. Let's modify `index.js` in order to simulate a crash.
+
+```js
+const express = require('express');
+const redis = require('redis');
+const process = require('process');
+
+const app = express();
+const client = redis.createClient({
+    host: 'redis'
+});
+
+client.set('visits', 0);
+
+app.get('/', (req, res) => {
+    process.exit(0);
+    client.get('visits', (error, visits) => {
+        res.send('Number of visits is ' + visits);
+        client.set('visits', parseInt(visits) + 1);
+    });
+});
+
+app.listen(8081, () => {
+    console.log('Listening on 8081')
+});
+
+
+```
+
+The `process.exit()` stops the process immediately and the container will stop too. Because we didn't tell the docker about restart strategy, it doesn't do something. The solution is define a restart policy in `docker-compose.yml`. There are some [restart policies](https://docs.docker.com/engine/reference/run/#restart-policies---restart) available.
+
+```yaml
+version: '3'
+
+services: 
+    redis:
+        image: redis
+    
+    app:
+        restart: on-failure
+        build: .
+        ports:
+            - 8081:8081
+
+```
+
+Now docker will restart the app container every time it crashes.
